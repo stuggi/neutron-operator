@@ -14,8 +14,15 @@ func DbSyncJob(
 	annotations map[string]string,
 ) *batchv1.Job {
 	dbSyncExtraMounts := []neutronv1beta1.NeutronExtraVolMounts{}
-	volumeMounts := GetVolumeMounts("db-sync", dbSyncExtraMounts, DbsyncPropagation)
+
 	volumes := GetVolumes(cr.Name, dbSyncExtraMounts, DbsyncPropagation)
+	volumeMounts := GetVolumeMounts("db-sync", dbSyncExtraMounts, DbsyncPropagation)
+
+	// add CA cert if defined
+	if cr.Spec.TLS.CaBundleSecretName != "" {
+		volumes = append(volumes, cr.Spec.TLS.CreateVolume())
+		volumeMounts = append(volumeMounts, cr.Spec.TLS.CreateVolumeMounts(nil)...)
+	}
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{

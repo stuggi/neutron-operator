@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -49,6 +50,7 @@ import (
 	common_rbac "github.com/openstack-k8s-operators/lib-common/modules/common/rbac"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/secret"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/tls"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/util"
 	mariadbv1 "github.com/openstack-k8s-operators/mariadb-operator/api/v1beta1"
 	neutronv1beta1 "github.com/openstack-k8s-operators/neutron-operator/api/v1beta1"
@@ -365,6 +367,48 @@ func (r *NeutronAPIReconciler) reconcileInit(
 	}
 
 	//
+	// TLS input validation
+	//
+	if instance.Spec.TLS.API.Enabled() {
+		// Validate the CA cert secret if provided
+		if instance.Spec.TLS.CaBundleSecretName != "" {
+			hash, ctrlResult, err := tls.ValidateCACertSecret(
+				ctx,
+				helper.GetClient(),
+				types.NamespacedName{
+					Name:      instance.Spec.TLS.CaBundleSecretName,
+					Namespace: instance.Namespace,
+				},
+			)
+			if err != nil {
+				return ctrlResult, err
+			} else if (ctrlResult != ctrl.Result{}) {
+				return ctrlResult, nil
+			}
+
+			if hash != "" {
+				secretVars[tls.CABundleKey] = env.SetValue(hash)
+			}
+		}
+		/*
+			// TODO: add hash to deployment
+
+			//certsHash, ctrlResult, err := tls.ValidateEndpointCerts(
+			_, ctrlResult, err := tls.ValidateEndpointCerts(
+				ctx,
+				helper,
+				instance.Namespace,
+				tlsEndpointConfig)
+			if err != nil {
+				return ctrlResult, err
+			} else if (ctrlResult != ctrl.Result{}) {
+				return ctrlResult, nil
+			}
+			//configMapVars[tls.TLSHashName] = env.SetValue(certsHash)
+		*/
+	}
+
+	//
 	// create hash over all the different input resources to identify if any those changed
 	// and a restart/recreate is required.
 	//
@@ -525,7 +569,12 @@ func (r *NeutronAPIReconciler) reconcileInit(
 		}
 		// create service - end
 
-		// TODO: TLS, pass in https as protocol, create TLS cert
+		// create TLS certificates if enabled
+		if _, ok := instance.Spec.TLS.API.Endpoint[endpointType]; ok && instance.Spec.TLS.API.Enabled() {
+			// set endpoint protocol to https
+			data.Protocol = ptr.To(service.ProtocolHTTPS)
+		}
+
 		apiEndpoints[string(endpointType)], err = svc.GetAPIEndpoint(
 			svcOverride.EndpointURL, data.Protocol, data.Path)
 		if err != nil {
@@ -840,7 +889,16 @@ func (r *NeutronAPIReconciler) reconcileNormal(ctx context.Context, instance *ne
 		return ctrlResult, fmt.Errorf("Failed to fetch input hash for Neutron deployment")
 	}
 
-	deplDef := neutronapi.Deployment(instance, inputHash, serviceLabels, serviceAnnotations)
+	deplDef, err := neutronapi.Deployment(instance, inputHash, serviceLabels, serviceAnnotations)
+	if err != nil {
+		instance.Status.Conditions.Set(condition.FalseCondition(
+			condition.DeploymentReadyCondition,
+			condition.ErrorReason,
+			condition.SeverityWarning,
+			condition.DeploymentReadyErrorMessage,
+			err.Error()))
+		return ctrlResult, err
+	}
 	depl := deployment.NewDeployment(
 		deplDef,
 		time.Duration(5)*time.Second,
@@ -1327,6 +1385,22 @@ func (r *NeutronAPIReconciler) generateServiceSecrets(
 	templateParameters["NBConnection"] = nbEndpoint
 	templateParameters["SBConnection"] = sbEndpoint
 
+	// create httpd  vhost template parameters
+	httpdVhostConfig := map[string]interface{}{}
+	for _, endpt := range []service.Endpoint{service.EndpointInternal, service.EndpointPublic} {
+		endptConfig := map[string]interface{}{}
+		endptConfig["ServerName"] = fmt.Sprintf("neutron-%s.%s.svc", endpt.String(), instance.Namespace)
+		endptConfig["TLS"] = false // default TLS to false, and set it bellow to true if enabled
+		if instance.Spec.TLS.API.Enabled() {
+			endptConfig["TLS"] = true
+			endptConfig["SSLCertificateFile"] = fmt.Sprintf("/etc/pki/tls/certs/%s.crt", endpt.String())
+			endptConfig["SSLCertificateKeyFile"] = fmt.Sprintf("/etc/pki/tls/private/%s.key", endpt.String())
+		}
+		httpdVhostConfig[endpt.String()] = endptConfig
+	}
+
+	templateParameters["VHosts"] = httpdVhostConfig
+
 	secrets := []util.Template{
 		{
 			Name:          fmt.Sprintf("%s-config", instance.Name),
@@ -1347,6 +1421,7 @@ func (r *NeutronAPIReconciler) generateServiceSecrets(
 				"httpd.conf":            "/neutronapi/httpd/httpd.conf",
 				"10-neutron-httpd.conf": "/neutronapi/httpd/10-neutron-httpd.conf",
 			},
+			ConfigOptions: templateParameters,
 		},
 	}
 	return secret.EnsureSecrets(ctx, h, instance, secrets, envVars)

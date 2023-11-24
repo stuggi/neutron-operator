@@ -25,7 +25,9 @@ import (
 )
 
 const (
-	ServiceCommand         = "/usr/bin/neutron-server"
+	// ServiceCommand -
+	ServiceCommand = "/usr/bin/neutron-server"
+	// NeutronAPIHttpdCommand -
 	NeutronAPIHttpdCommand = "/usr/sbin/httpd"
 )
 
@@ -35,7 +37,7 @@ func Deployment(
 	configHash string,
 	labels map[string]string,
 	annotations map[string]string,
-) *appsv1.Deployment {
+) (*appsv1.Deployment, error) {
 	livenessProbe := &corev1.Probe{
 		// TODO might need tuning
 		TimeoutSeconds:      5,
@@ -50,7 +52,7 @@ func Deployment(
 	}
 	cmd := ServiceCommand
 	args := []string{}
-	httpd_args := []string{"-DFOREGROUND"}
+	httpdArgs := []string{"-DFOREGROUND"}
 
 	if instance.Spec.Debug.Service {
 		cmd = "/bin/sleep"
@@ -78,10 +80,40 @@ func Deployment(
 			Path: "/",
 			Port: intstr.IntOrString{Type: intstr.Int, IntVal: int32(NeutronPublicPort)},
 		}
+
+		if instance.Spec.TLS.API.Enabled() {
+			livenessProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+			readinessProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+		}
 	}
 
 	envVars := map[string]env.Setter{}
 	envVars["CONFIG_HASH"] = env.SetValue(configHash)
+
+	// create Volume and VolumeMounts
+	volumes := GetVolumes(instance.Name, instance.Spec.ExtraMounts, NeutronAPIPropagation)
+	apiVolumeMounts := GetVolumeMounts("neutron-api", instance.Spec.ExtraMounts, NeutronAPIPropagation)
+	httpdVolumeMounts := GetHttpdVolumeMount()
+
+	// create Volume and VolumeMounts and add the CA bundle
+	if instance.Spec.TLS.CaBundleSecretName != "" {
+		volumes = append(volumes, instance.Spec.TLS.CreateVolume())
+		apiVolumeMounts = append(apiVolumeMounts, instance.Spec.TLS.CreateVolumeMounts(nil)...)
+		httpdVolumeMounts = append(httpdVolumeMounts, instance.Spec.TLS.CreateVolumeMounts(nil)...)
+	}
+
+	// add CA cert if defined
+	if instance.Spec.TLS.API.Enabled() {
+		// add service cert Volumes and VolumeMounts
+		for endpt, tlsEndptCfg := range instance.Spec.TLS.API.Endpoint {
+			svc, err := tlsEndptCfg.ToService()
+			if err != nil {
+				return nil, err
+			}
+			volumes = append(volumes, svc.CreateVolume(endpt.String()))
+			httpdVolumeMounts = append(httpdVolumeMounts, svc.CreateVolumeMounts(endpt.String())...)
+		}
+	}
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -108,7 +140,7 @@ func Deployment(
 							Image:                    instance.Spec.ContainerImage,
 							SecurityContext:          getNeutronSecurityContext(),
 							Env:                      env.MergeEnvs([]corev1.EnvVar{}, envVars),
-							VolumeMounts:             GetVolumeMounts("neutron-api", instance.Spec.ExtraMounts, NeutronAPIPropagation),
+							VolumeMounts:             apiVolumeMounts,
 							Resources:                instance.Spec.Resources,
 							ReadinessProbe:           readinessProbe,
 							LivenessProbe:            livenessProbe,
@@ -117,22 +149,23 @@ func Deployment(
 						{
 							Name:                     ServiceName + "-httpd",
 							Command:                  []string{NeutronAPIHttpdCommand},
-							Args:                     httpd_args,
+							Args:                     httpdArgs,
 							Image:                    instance.Spec.ContainerImage,
 							SecurityContext:          getNeutronHttpdSecurityContext(),
 							Env:                      env.MergeEnvs([]corev1.EnvVar{}, envVars),
-							VolumeMounts:             GetHttpdVolumeMount(),
+							VolumeMounts:             httpdVolumeMounts,
 							Resources:                instance.Spec.Resources,
 							ReadinessProbe:           readinessProbe,
 							LivenessProbe:            livenessProbe,
 							TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 						},
 					},
+					Volumes: volumes,
 				},
 			},
 		},
 	}
-	deployment.Spec.Template.Spec.Volumes = GetVolumes(instance.Name, instance.Spec.ExtraMounts, NeutronAPIPropagation)
+
 	// If possible two pods of the same service should not
 	// run on the same worker node. If this is not possible
 	// the get still created on the same worker node.
@@ -147,5 +180,5 @@ func Deployment(
 		deployment.Spec.Template.Spec.NodeSelector = instance.Spec.NodeSelector
 	}
 
-	return deployment
+	return deployment, nil
 }

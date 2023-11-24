@@ -10,7 +10,7 @@ require (
 	github.com/onsi/gomega v1.30.0
 	github.com/openstack-k8s-operators/infra-operator/apis v0.3.1-0.20231122104142-3b449040167e
 	github.com/openstack-k8s-operators/keystone-operator/api v0.3.1-0.20231121110947-d38363cf0f05
-	github.com/openstack-k8s-operators/lib-common/modules/common v0.3.1-0.20231122111552-6bd6025ade37
+	github.com/openstack-k8s-operators/lib-common/modules/common v0.3.1-0.20231128145648-956f4d361a63
 	github.com/openstack-k8s-operators/lib-common/modules/storage v0.3.1-0.20231122111552-6bd6025ade37
 	github.com/openstack-k8s-operators/lib-common/modules/test v0.3.1-0.20231122111552-6bd6025ade37
 	github.com/openstack-k8s-operators/mariadb-operator/api v0.3.0
@@ -20,7 +20,7 @@ require (
 	k8s.io/api v0.26.11
 	k8s.io/apimachinery v0.26.11
 	k8s.io/client-go v0.26.11
-	k8s.io/utils v0.0.0-20231121161247-cf03d44ff3cf
+	k8s.io/utils v0.0.0-20231127182322-b307cd553661
 	sigs.k8s.io/controller-runtime v0.14.7
 )
 
@@ -61,15 +61,15 @@ require (
 	github.com/prometheus/procfs v0.8.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
-	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
+	golang.org/x/exp v0.0.0-20231127185646-65229373498e // indirect
 	golang.org/x/mod v0.14.0 // indirect
-	golang.org/x/net v0.18.0 // indirect
+	golang.org/x/net v0.19.0 // indirect
 	golang.org/x/oauth2 v0.7.0 // indirect
-	golang.org/x/sys v0.14.0 // indirect
-	golang.org/x/term v0.14.0 // indirect
+	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/term v0.15.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
-	golang.org/x/tools v0.15.0 // indirect
+	golang.org/x/tools v0.16.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.2.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
@@ -85,6 +85,15 @@ require (
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
 
+replace ( //allow-merging
+	// pin to k8s 0.26.x for now
+	k8s.io/api => k8s.io/api v0.26.11
+	k8s.io/apimachinery => k8s.io/apimachinery v0.26.11
+	k8s.io/client-go => k8s.io/client-go v0.26.11
+	k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20230327201221-f5883ff37f0c
+	sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.14.7
+)
+
 // Bump golang.org/x/net to avoid Rapid Reset CVE
 replace golang.org/x/net => golang.org/x/net v0.18.0 //allow-merging
 
@@ -93,3 +102,7 @@ replace github.com/openstack-k8s-operators/neutron-operator/api => ./api
 // mschuppert: map to latest commit from release-4.13 tag
 // must consistent within modules and service operators
 replace github.com/openshift/api => github.com/openshift/api v0.0.0-20230414143018-3367bc7e6ac7 //allow-merging
+
+replace github.com/openstack-k8s-operators/lib-common/modules/common => github.com/stuggi/lib-common/modules/common v0.0.0-20231128145746-6ba201973b79
+
+replace github.com/openstack-k8s-operators/infra-operator/apis => github.com/stuggi/infra-operator/apis v0.0.0-20231204073358-dcbf8a453951
