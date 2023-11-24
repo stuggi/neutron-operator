@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -34,9 +35,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	certmgrv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	memcachedv1 "github.com/openstack-k8s-operators/infra-operator/apis/memcached/v1beta1"
 	rabbitmqv1 "github.com/openstack-k8s-operators/infra-operator/apis/rabbitmq/v1beta1"
 	keystonev1 "github.com/openstack-k8s-operators/keystone-operator/api/v1beta1"
+	"github.com/openstack-k8s-operators/lib-common/modules/certmanager"
 	"github.com/openstack-k8s-operators/lib-common/modules/common"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/condition"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/deployment"
@@ -49,6 +52,7 @@ import (
 	common_rbac "github.com/openstack-k8s-operators/lib-common/modules/common/rbac"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/secret"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/tls"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/util"
 	mariadbv1 "github.com/openstack-k8s-operators/mariadb-operator/api/v1beta1"
 	neutronv1beta1 "github.com/openstack-k8s-operators/neutron-operator/api/v1beta1"
@@ -90,6 +94,8 @@ type NeutronAPIReconciler struct {
 // +kubebuilder:rbac:groups=rabbitmq.openstack.org,resources=transporturls,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=memcached.openstack.org,resources=memcacheds,verbs=get;list;watch;
 // +kubebuilder:rbac:groups=k8s.cni.cncf.io,resources=network-attachment-definitions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete;
 
 // service account, role, rolebinding
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update
@@ -216,6 +222,7 @@ func (r *NeutronAPIReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Ma
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
+		Owns(&certmgrv1.Certificate{}).
 		Watches(&source.Kind{Type: &ovnclient.OVNDBCluster{}}, handler.EnqueueRequestsFromMapFunc(ovnclient.OVNDBClusterNamespaceMapFunc(crs, mgr.GetClient(), r.GetLogger(ctx)))).
 		Watches(&source.Kind{Type: &memcachedv1.Memcached{}}, handler.EnqueueRequestsFromMapFunc(r.memcachedNamespaceMapFunc(ctx, crs))).
 		Complete(r)
@@ -285,9 +292,10 @@ func (r *NeutronAPIReconciler) reconcileInit(
 	serviceAnnotations map[string]string,
 	ospSecret *corev1.Secret,
 	secretVars map[string]env.Setter,
-) (ctrl.Result, error) {
+) (map[service.Endpoint]tls.Service, ctrl.Result, error) {
 	Log := r.GetLogger(ctx)
 	Log.Info("Reconciling Service init")
+	tlsEndptCfgMap := make(map[service.Endpoint]tls.Service)
 
 	// create neutron DB instance
 	//
@@ -313,7 +321,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.SeverityWarning,
 			condition.DBReadyErrorMessage,
 			err.Error()))
-		return ctrl.Result{}, err
+		return tlsEndptCfgMap, ctrl.Result{}, err
 	}
 	if (ctrlResult != ctrl.Result{}) {
 		instance.Status.Conditions.Set(condition.FalseCondition(
@@ -321,7 +329,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.RequestedReason,
 			condition.SeverityInfo,
 			condition.DBReadyRunningMessage))
-		return ctrlResult, nil
+		return tlsEndptCfgMap, ctrlResult, nil
 	}
 	// wait for the DB to be setup
 	ctrlResult, err = db.WaitForDBCreatedWithTimeout(ctx, helper, time.Second*5)
@@ -332,7 +340,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.SeverityWarning,
 			condition.DBReadyErrorMessage,
 			err.Error()))
-		return ctrlResult, err
+		return tlsEndptCfgMap, ctrlResult, err
 	}
 	if (ctrlResult != ctrl.Result{}) {
 		instance.Status.Conditions.Set(condition.FalseCondition(
@@ -340,7 +348,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.RequestedReason,
 			condition.SeverityInfo,
 			condition.DBReadyRunningMessage))
-		return ctrlResult, nil
+		return tlsEndptCfgMap, ctrlResult, nil
 	}
 	// update Status.DatabaseHostname, used to bootstrap/config the service
 	instance.Status.DatabaseHostname = db.GetDatabaseHostname()
@@ -361,7 +369,33 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.SeverityWarning,
 			condition.ServiceConfigReadyErrorMessage,
 			err.Error()))
-		return ctrl.Result{}, err
+		return tlsEndptCfgMap, ctrl.Result{}, err
+	}
+
+	//
+	// TLS input validation
+	//
+	if instance.Spec.TLS.API.Enabled() {
+		// Validate the CA cert secret if provided
+		if instance.Spec.TLS.CaBundleSecretName != "" {
+			hash, ctrlResult, err := tls.ValidateCACertSecret(
+				ctx,
+				helper.GetClient(),
+				types.NamespacedName{
+					Name:      instance.Spec.TLS.CaBundleSecretName,
+					Namespace: instance.Namespace,
+				},
+			)
+			if err != nil {
+				return tlsEndptCfgMap, ctrlResult, err
+			} else if (ctrlResult != ctrl.Result{}) {
+				return tlsEndptCfgMap, ctrlResult, nil
+			}
+
+			if hash != "" {
+				secretVars[tls.CABundleKey] = env.SetValue(hash)
+			}
+		}
 	}
 
 	//
@@ -376,11 +410,11 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.SeverityWarning,
 			condition.ServiceConfigReadyErrorMessage,
 			err.Error()))
-		return ctrl.Result{}, err
+		return tlsEndptCfgMap, ctrl.Result{}, err
 	} else if hashChanged {
 		// Hash changed and instance status should be updated (which will be done by main defer func),
 		// so we need to return and reconcile again
-		return ctrl.Result{Requeue: true}, nil
+		return tlsEndptCfgMap, ctrl.Result{Requeue: true}, nil
 	}
 	// Create Secrets - end
 
@@ -410,7 +444,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.RequestedReason,
 			condition.SeverityInfo,
 			condition.DBSyncReadyRunningMessage))
-		return ctrlResult, nil
+		return tlsEndptCfgMap, ctrlResult, nil
 	}
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
@@ -419,7 +453,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 			condition.SeverityWarning,
 			condition.DBSyncReadyErrorMessage,
 			err.Error()))
-		return ctrl.Result{}, err
+		return tlsEndptCfgMap, ctrl.Result{}, err
 	}
 	if dbSyncjob.HasChanged() {
 		instance.Status.Hash[neutronv1beta1.DbSyncHash] = dbSyncjob.GetHash()
@@ -482,7 +516,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 				condition.ExposeServiceReadyErrorMessage,
 				err.Error()))
 
-			return ctrl.Result{}, err
+			return tlsEndptCfgMap, ctrl.Result{}, err
 		}
 
 		svc.AddAnnotation(map[string]string{
@@ -514,22 +548,62 @@ func (r *NeutronAPIReconciler) reconcileInit(
 				condition.ExposeServiceReadyErrorMessage,
 				err.Error()))
 
-			return ctrlResult, err
+			return tlsEndptCfgMap, ctrlResult, err
 		} else if (ctrlResult != ctrl.Result{}) {
 			instance.Status.Conditions.Set(condition.FalseCondition(
 				condition.ExposeServiceReadyCondition,
 				condition.RequestedReason,
 				condition.SeverityInfo,
 				condition.ExposeServiceReadyRunningMessage))
-			return ctrlResult, nil
+			return tlsEndptCfgMap, ctrlResult, nil
 		}
 		// create service - end
 
-		// TODO: TLS, pass in https as protocol, create TLS cert
+		// create TLS certificates if enabled
+		if endpointTLSCfg, ok := instance.Spec.TLS.API.Endpoint[endpointType]; ok && instance.Spec.TLS.API.Enabled() {
+			// generate certificate
+			if endpointTLSCfg.SecretName == nil && endpointTLSCfg.IssuerName != nil {
+				// request certificate
+				certRequest := certmanager.CertificateRequest{
+					IssuerName:  *endpointTLSCfg.IssuerName,
+					CertName:    fmt.Sprintf("%s-svc", endpointName),
+					Duration:    nil,
+					Hostnames:   []string{svc.GetServiceHostname()},
+					Ips:         nil,
+					Annotations: map[string]string{},
+					Labels:      exportLabels,
+					Usages:      nil,
+				}
+				certSecret, ctrlResult, err := certmanager.EnsureCert(
+					ctx,
+					helper,
+					certRequest)
+				if err != nil {
+					return tlsEndptCfgMap, ctrlResult, err
+				} else if (ctrlResult != ctrl.Result{}) {
+					return tlsEndptCfgMap, ctrlResult, nil
+				}
+
+				endpointTLSCfg.SecretName = ptr.To(certSecret.Name)
+			}
+
+			// convert to tls.Service. Here we could also set different
+			// mount points for the certificates if required
+			tlsService, err := endpointTLSCfg.ToService()
+			if err != nil {
+				return tlsEndptCfgMap, ctrlResult, err
+			}
+
+			tlsEndptCfgMap[endpointType] = *tlsService
+
+			// set endpoint protocol to https
+			data.Protocol = ptr.To(service.ProtocolHTTPS)
+		}
+
 		apiEndpoints[string(endpointType)], err = svc.GetAPIEndpoint(
 			svcOverride.EndpointURL, data.Protocol, data.Path)
 		if err != nil {
-			return ctrl.Result{}, err
+			return tlsEndptCfgMap, ctrl.Result{}, err
 		}
 	}
 
@@ -552,7 +626,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 	ctrlResult, err = ksSvc.CreateOrPatch(ctx, helper)
 
 	if err != nil {
-		return ctrlResult, err
+		return tlsEndptCfgMap, ctrlResult, err
 	}
 
 	// mirror the Status, Reason, Severity and Message of the latest keystoneservice condition
@@ -563,7 +637,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 	}
 
 	if (ctrlResult != ctrl.Result{}) {
-		return ctrlResult, nil
+		return tlsEndptCfgMap, ctrlResult, nil
 	}
 
 	//
@@ -581,7 +655,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 		time.Duration(10)*time.Second)
 	ctrlResult, err = ksEndpt.CreateOrPatch(ctx, helper)
 	if err != nil {
-		return ctrlResult, err
+		return tlsEndptCfgMap, ctrlResult, err
 	}
 	// mirror the Status, Reason, Severity and Message of the latest keystoneendpoint condition
 	// into a local condition with the type condition.KeystoneEndpointReadyCondition
@@ -591,11 +665,11 @@ func (r *NeutronAPIReconciler) reconcileInit(
 	}
 
 	if (ctrlResult != ctrl.Result{}) {
-		return ctrlResult, nil
+		return tlsEndptCfgMap, ctrlResult, nil
 	}
 
 	Log.Info("Reconciled Service init successfully")
-	return ctrl.Result{}, nil
+	return tlsEndptCfgMap, ctrl.Result{}, nil
 }
 
 func (r *NeutronAPIReconciler) reconcileUpdate(ctx context.Context, instance *neutronv1beta1.NeutronAPI, helper *helper.Helper) (ctrl.Result, error) {
@@ -811,11 +885,27 @@ func (r *NeutronAPIReconciler) reconcileNormal(ctx context.Context, instance *ne
 	}
 
 	// Handle service init
-	ctrlResult, err := r.reconcileInit(ctx, instance, helper, serviceLabels, serviceAnnotations, ospSecret, secretVars)
+	tlsEndpointConfig, ctrlResult, err := r.reconcileInit(ctx, instance, helper, serviceLabels, serviceAnnotations, ospSecret, secretVars)
 	if err != nil {
 		return ctrlResult, err
 	} else if (ctrlResult != ctrl.Result{}) {
 		return ctrlResult, nil
+	}
+
+	// TODO: add hash to deployment
+	if len(tlsEndpointConfig) > 0 {
+		//certsHash, ctrlResult, err := tls.ValidateEndpointCerts(
+		_, ctrlResult, err := tls.ValidateEndpointCerts(
+			ctx,
+			helper,
+			instance.Namespace,
+			tlsEndpointConfig)
+		if err != nil {
+			return ctrlResult, err
+		} else if (ctrlResult != ctrl.Result{}) {
+			return ctrlResult, nil
+		}
+		//configMapVars[tls.TLSHashName] = env.SetValue(certsHash)
 	}
 
 	// Handle service update
@@ -840,7 +930,7 @@ func (r *NeutronAPIReconciler) reconcileNormal(ctx context.Context, instance *ne
 		return ctrlResult, fmt.Errorf("Failed to fetch input hash for Neutron deployment")
 	}
 
-	deplDef := neutronapi.Deployment(instance, inputHash, serviceLabels, serviceAnnotations)
+	deplDef := neutronapi.Deployment(instance, inputHash, serviceLabels, serviceAnnotations, tlsEndpointConfig)
 	depl := deployment.NewDeployment(
 		deplDef,
 		time.Duration(5)*time.Second,
@@ -1327,6 +1417,22 @@ func (r *NeutronAPIReconciler) generateServiceSecrets(
 	templateParameters["NBConnection"] = nbEndpoint
 	templateParameters["SBConnection"] = sbEndpoint
 
+	// create httpd  vhost template parameters
+	httpdVhostConfig := map[string]interface{}{}
+	for _, endpt := range []service.Endpoint{service.EndpointInternal, service.EndpointPublic} {
+		endptConfig := map[string]interface{}{}
+		endptConfig["ServerName"] = fmt.Sprintf("neutron-%s.%s.svc", endpt.String(), instance.Namespace)
+		endptConfig["TLS"] = false // default TLS to false, and set it bellow to true if enabled
+		if instance.Spec.TLS.API.Enabled() {
+			endptConfig["TLS"] = true
+			endptConfig["SSLCertificateFile"] = fmt.Sprintf("/etc/pki/tls/certs/%s.crt", endpt.String())
+			endptConfig["SSLCertificateKeyFile"] = fmt.Sprintf("/etc/pki/tls/private/%s.key", endpt.String())
+		}
+		httpdVhostConfig[endpt.String()] = endptConfig
+	}
+
+	templateParameters["VHosts"] = httpdVhostConfig
+
 	secrets := []util.Template{
 		{
 			Name:          fmt.Sprintf("%s-config", instance.Name),
@@ -1347,6 +1453,7 @@ func (r *NeutronAPIReconciler) generateServiceSecrets(
 				"httpd.conf":            "/neutronapi/httpd/httpd.conf",
 				"10-neutron-httpd.conf": "/neutronapi/httpd/10-neutron-httpd.conf",
 			},
+			ConfigOptions: templateParameters,
 		},
 	}
 	return secret.EnsureSecrets(ctx, h, instance, secrets, envVars)

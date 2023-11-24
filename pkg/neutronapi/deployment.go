@@ -16,6 +16,8 @@ import (
 	"github.com/openstack-k8s-operators/lib-common/modules/common"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/affinity"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/env"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/tls"
 	neutronv1 "github.com/openstack-k8s-operators/neutron-operator/api/v1beta1"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,7 +27,9 @@ import (
 )
 
 const (
-	ServiceCommand         = "/usr/bin/neutron-server"
+	// ServiceCommand -
+	ServiceCommand = "/usr/bin/neutron-server"
+	// NeutronAPIHttpdCommand -
 	NeutronAPIHttpdCommand = "/usr/sbin/httpd"
 )
 
@@ -35,6 +39,7 @@ func Deployment(
 	configHash string,
 	labels map[string]string,
 	annotations map[string]string,
+	tlsEndptCfgMap map[service.Endpoint]tls.Service,
 ) *appsv1.Deployment {
 	livenessProbe := &corev1.Probe{
 		// TODO might need tuning
@@ -50,7 +55,7 @@ func Deployment(
 	}
 	cmd := ServiceCommand
 	args := []string{}
-	httpd_args := []string{"-DFOREGROUND"}
+	httpdArgs := []string{"-DFOREGROUND"}
 
 	if instance.Spec.Debug.Service {
 		cmd = "/bin/sleep"
@@ -78,10 +83,34 @@ func Deployment(
 			Path: "/",
 			Port: intstr.IntOrString{Type: intstr.Int, IntVal: int32(NeutronPublicPort)},
 		}
+
+		if instance.Spec.TLS.API.Enabled() {
+			livenessProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+			readinessProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+		}
 	}
 
 	envVars := map[string]env.Setter{}
 	envVars["CONFIG_HASH"] = env.SetValue(configHash)
+
+	// create Volume and VolumeMounts
+	volumes := GetVolumes(instance.Name, instance.Spec.ExtraMounts, NeutronAPIPropagation)
+	apiVolumeMounts := GetVolumeMounts("neutron-api", instance.Spec.ExtraMounts, NeutronAPIPropagation)
+	httpdVolumeMounts := GetHttpdVolumeMount()
+
+	// add CA cert if defined
+	if instance.Spec.TLS.API.Enabled() {
+		// Validate endpoint cert secrets
+		volumes = append(volumes, instance.Spec.TLS.CreateVolume())
+		apiVolumeMounts = append(apiVolumeMounts, instance.Spec.TLS.CreateVolumeMounts(nil)...)
+		httpdVolumeMounts = append(httpdVolumeMounts, instance.Spec.TLS.CreateVolumeMounts(nil)...)
+
+		// add service cert Volumes and VolumeMounts
+		for endpt, tlsEndptCfg := range tlsEndptCfgMap {
+			volumes = append(volumes, tlsEndptCfg.CreateVolume(endpt.String()))
+			httpdVolumeMounts = append(httpdVolumeMounts, tlsEndptCfg.CreateVolumeMounts(endpt.String())...)
+		}
+	}
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -108,7 +137,7 @@ func Deployment(
 							Image:                    instance.Spec.ContainerImage,
 							SecurityContext:          getNeutronSecurityContext(),
 							Env:                      env.MergeEnvs([]corev1.EnvVar{}, envVars),
-							VolumeMounts:             GetVolumeMounts("neutron-api", instance.Spec.ExtraMounts, NeutronAPIPropagation),
+							VolumeMounts:             apiVolumeMounts,
 							Resources:                instance.Spec.Resources,
 							ReadinessProbe:           readinessProbe,
 							LivenessProbe:            livenessProbe,
@@ -117,22 +146,23 @@ func Deployment(
 						{
 							Name:                     ServiceName + "-httpd",
 							Command:                  []string{NeutronAPIHttpdCommand},
-							Args:                     httpd_args,
+							Args:                     httpdArgs,
 							Image:                    instance.Spec.ContainerImage,
 							SecurityContext:          getNeutronHttpdSecurityContext(),
 							Env:                      env.MergeEnvs([]corev1.EnvVar{}, envVars),
-							VolumeMounts:             GetHttpdVolumeMount(),
+							VolumeMounts:             httpdVolumeMounts,
 							Resources:                instance.Spec.Resources,
 							ReadinessProbe:           readinessProbe,
 							LivenessProbe:            livenessProbe,
 							TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 						},
 					},
+					Volumes: volumes,
 				},
 			},
 		},
 	}
-	deployment.Spec.Template.Spec.Volumes = GetVolumes(instance.Name, instance.Spec.ExtraMounts, NeutronAPIPropagation)
+
 	// If possible two pods of the same service should not
 	// run on the same worker node. If this is not possible
 	// the get still created on the same worker node.
