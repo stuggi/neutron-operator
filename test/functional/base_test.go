@@ -24,6 +24,7 @@ import (
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	condition "github.com/openstack-k8s-operators/lib-common/modules/common/condition"
 	neutronv1 "github.com/openstack-k8s-operators/neutron-operator/api/v1beta1"
@@ -32,6 +33,10 @@ import (
 
 const (
 	SecretName = "test-secret"
+
+	PublicCertSecretName   = "public-tls-certs"
+	InternalCertSecretName = "internal-tls-certs"
+	CABundleSecretName     = "combined-ca-bundle"
 
 	timeout  = time.Second * 10
 	interval = timeout / 100
@@ -65,7 +70,26 @@ func GetDefaultNeutronAPISpec() map[string]interface{} {
 	}
 }
 
-func CreateNeutronAPI(namespace string, NeutronAPIName string, spec map[string]interface{}) types.NamespacedName {
+func GetTLSNeutronAPISpec() map[string]interface{} {
+	return map[string]interface{}{
+		"databaseInstance": "test-neutron-db-instance",
+		"containerImage":   "test-neutron-container-image",
+		"secret":           SecretName,
+		"tls": map[string]interface{}{
+			"api": map[string]interface{}{
+				"internal": map[string]interface{}{
+					"secretName": InternalCertSecretName,
+				},
+				"public": map[string]interface{}{
+					"secretName": PublicCertSecretName,
+				},
+			},
+			"caBundleSecretName": CABundleSecretName,
+		},
+	}
+}
+
+func CreateNeutronAPI(namespace string, NeutronAPIName string, spec map[string]interface{}) client.Object {
 
 	raw := map[string]interface{}{
 		"apiVersion": "neutron.openstack.org/v1beta1",
@@ -76,9 +100,8 @@ func CreateNeutronAPI(namespace string, NeutronAPIName string, spec map[string]i
 		},
 		"spec": spec,
 	}
-	th.CreateUnstructured(raw)
 
-	return types.NamespacedName{Name: NeutronAPIName, Namespace: namespace}
+	return th.CreateUnstructured(raw)
 }
 
 func DeleteNeutronAPI(name types.NamespacedName) {

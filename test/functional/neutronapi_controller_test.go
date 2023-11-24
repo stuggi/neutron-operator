@@ -43,6 +43,9 @@ var _ = Describe("NeutronAPI controller", func() {
 	var neutronAPIName types.NamespacedName
 	var memcachedSpec memcachedv1.MemcachedSpec
 	var memcachedName types.NamespacedName
+	var caBundleSecretName types.NamespacedName
+	var internalCertSecretName types.NamespacedName
+	var publicCertSecretName types.NamespacedName
 
 	BeforeEach(func() {
 		// NOTE(gibi): We need to create a unique namespace for each test run
@@ -59,10 +62,10 @@ var _ = Describe("NeutronAPI controller", func() {
 			Namespace: namespace,
 			Name:      name + "-neutron-transport",
 		}
-
-		spec := GetDefaultNeutronAPISpec()
-		spec["customServiceConfig"] = "[DEFAULT]\ndebug=True"
-		neutronAPIName = CreateNeutronAPI(namespace, name, spec)
+		neutronAPIName = types.NamespacedName{
+			Namespace: namespace,
+			Name:      name,
+		}
 		memcachedSpec = memcachedv1.MemcachedSpec{
 			Replicas: pointer.Int32(3),
 		}
@@ -70,10 +73,25 @@ var _ = Describe("NeutronAPI controller", func() {
 			Name:      "memcached",
 			Namespace: namespace,
 		}
-		DeferCleanup(DeleteNeutronAPI, neutronAPIName)
+		caBundleSecretName = types.NamespacedName{
+			Name:      CABundleSecretName,
+			Namespace: namespace,
+		}
+		internalCertSecretName = types.NamespacedName{
+			Name:      InternalCertSecretName,
+			Namespace: namespace,
+		}
+		publicCertSecretName = types.NamespacedName{
+			Name:      PublicCertSecretName,
+			Namespace: namespace,
+		}
+		//DeferCleanup(DeleteNeutronAPI, neutronAPIName)
 	})
 
 	When("A NeutronAPI instance is created", func() {
+		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+		})
 
 		It("should have the Spec fields initialized", func() {
 			NeutronAPI := GetNeutronAPI(neutronAPIName)
@@ -123,6 +141,10 @@ var _ = Describe("NeutronAPI controller", func() {
 	})
 
 	When("an unrelated secret is provided", func() {
+		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+		})
+
 		It("should remain in a state of waiting for the proper secret", func() {
 			SimulateTransportURLReady(apiTransportURLName)
 			secret = &corev1.Secret{
@@ -157,6 +179,7 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("the proper secret is provided, TransportURL and Memcached are Created", func() {
 		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
 			DeferCleanup(DeleteOVNDBClusters, CreateOVNDBClusters(namespace))
 
 			secret = &corev1.Secret{
@@ -251,6 +274,8 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("Memcached is available", func() {
 		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+
 			secret = &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      SecretName,
@@ -279,6 +304,8 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("OVNDBCluster instance is not available", func() {
 		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      SecretName,
@@ -302,6 +329,8 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("keystoneAPI instance is not available", func() {
 		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      SecretName,
@@ -326,6 +355,10 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("keystoneAPI, OVNDBCluster and Memcached instances are available", func() {
 		BeforeEach(func() {
+			spec := GetDefaultNeutronAPISpec()
+			spec["customServiceConfig"] = "[DEFAULT]\ndebug=True"
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, spec))
+
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      SecretName,
@@ -690,6 +723,8 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("DB is created", func() {
 		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      SecretName,
@@ -740,6 +775,8 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("Keystone Resources are created", func() {
 		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      SecretName,
@@ -829,6 +866,8 @@ var _ = Describe("NeutronAPI controller", func() {
 
 	When("NeutronAPI CR is deleted", func() {
 		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(neutronAPIName.Namespace, neutronAPIName.Name, GetDefaultNeutronAPISpec()))
+
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      SecretName,
@@ -877,6 +916,160 @@ var _ = Describe("NeutronAPI controller", func() {
 			//Eventually(func() corev1.Secret {
 			//	return th.GetSecret(secret)
 			//}, timeout, interval).Should(BeNil())
+		})
+	})
+
+	When("A NeutronAPI is created with TLS", func() {
+		BeforeEach(func() {
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(
+				neutronAPIName.Namespace, neutronAPIName.Name, GetTLSNeutronAPISpec()))
+
+			DeferCleanup(k8sClient.Delete, ctx, th.CreateCABundleSecret(caBundleSecretName))
+			DeferCleanup(k8sClient.Delete, ctx, th.CreateCertSecret(internalCertSecretName))
+			DeferCleanup(k8sClient.Delete, ctx, th.CreateCertSecret(publicCertSecretName))
+
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      SecretName,
+					Namespace: namespace,
+				},
+				Data: map[string][]byte{
+					"NeutronPassword": []byte("12345678"),
+					"transport_url":   []byte("rabbit://user@svc:1234"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).Should(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, secret)
+			DeferCleanup(
+				mariadb.DeleteDBService,
+				mariadb.CreateDBService(
+					namespace,
+					GetNeutronAPI(neutronAPIName).Spec.DatabaseInstance,
+					corev1.ServiceSpec{
+						Ports: []corev1.ServicePort{{Port: 3306}},
+					},
+				),
+			)
+			SimulateTransportURLReady(apiTransportURLName)
+			DeferCleanup(infra.DeleteMemcached, infra.CreateMemcached(namespace, "memcached", memcachedSpec))
+			infra.SimulateMemcachedReady(memcachedName)
+			DeferCleanup(DeleteOVNDBClusters, CreateOVNDBClusters(namespace))
+			DeferCleanup(keystone.DeleteKeystoneAPI, keystone.CreateKeystoneAPI(namespace))
+			mariadb.SimulateMariaDBDatabaseCompleted(types.NamespacedName{Namespace: namespace, Name: neutronAPIName.Name})
+			th.SimulateJobSuccess(types.NamespacedName{Namespace: namespace, Name: neutronAPIName.Name + "-db-sync"})
+			keystone.SimulateKeystoneServiceReady(types.NamespacedName{Namespace: namespace, Name: "neutron"})
+			keystone.SimulateKeystoneEndpointReady(types.NamespacedName{Namespace: namespace, Name: "neutron"})
+		})
+
+		It("it creates deployment with CA and service certs mounted", func() {
+
+			deployment := th.GetDeployment(
+				types.NamespacedName{
+					Namespace: neutronAPIName.Namespace,
+					Name:      "neutron",
+				},
+			)
+
+			// cert deployment volumes
+			th.AssertVolumeExists(caBundleSecretName.Name, deployment.Spec.Template.Spec.Volumes)
+			th.AssertVolumeExists(internalCertSecretName.Name, deployment.Spec.Template.Spec.Volumes)
+			th.AssertVolumeExists(publicCertSecretName.Name, deployment.Spec.Template.Spec.Volumes)
+
+			// svc container ca cert
+			nSvcContainer := deployment.Spec.Template.Spec.Containers[0]
+			th.AssertVolumeMountExists(caBundleSecretName.Name, "tls-ca-bundle.pem", nSvcContainer.VolumeMounts)
+
+			// httpd container certs
+			nHttpdProxyContainer := deployment.Spec.Template.Spec.Containers[1]
+			th.AssertVolumeMountExists(publicCertSecretName.Name, "tls.key", nHttpdProxyContainer.VolumeMounts)
+			th.AssertVolumeMountExists(publicCertSecretName.Name, "tls.crt", nHttpdProxyContainer.VolumeMounts)
+			th.AssertVolumeMountExists(internalCertSecretName.Name, "tls.key", nHttpdProxyContainer.VolumeMounts)
+			th.AssertVolumeMountExists(internalCertSecretName.Name, "tls.crt", nHttpdProxyContainer.VolumeMounts)
+			th.AssertVolumeMountExists(caBundleSecretName.Name, "tls-ca-bundle.pem", nHttpdProxyContainer.VolumeMounts)
+
+			Expect(nHttpdProxyContainer.ReadinessProbe.HTTPGet.Scheme).To(Equal(corev1.URISchemeHTTPS))
+			Expect(nHttpdProxyContainer.LivenessProbe.HTTPGet.Scheme).To(Equal(corev1.URISchemeHTTPS))
+		})
+
+		It("TLS Endpoints are created", func() {
+
+			th.ExpectCondition(
+				neutronAPIName,
+				ConditionGetterFunc(NeutronAPIConditionGetter),
+				condition.KeystoneEndpointReadyCondition,
+				corev1.ConditionTrue,
+			)
+			keystoneEndpoint := keystone.GetKeystoneEndpoint(types.NamespacedName{Namespace: namespace, Name: "neutron"})
+			endpoints := keystoneEndpoint.Spec.Endpoints
+			Expect(endpoints).To(HaveKeyWithValue("public", "https://neutron-public."+neutronAPIName.Namespace+".svc:9696"))
+			Expect(endpoints).To(HaveKeyWithValue("internal", "https://neutron-internal."+neutronAPIName.Namespace+".svc:9696"))
+		})
+	})
+
+	When("A NeutronAPI is created with TLS and service override endpointURL set", func() {
+		BeforeEach(func() {
+			spec := GetTLSNeutronAPISpec()
+			serviceOverride := map[string]interface{}{}
+			serviceOverride["public"] = map[string]interface{}{
+				"endpointURL": "https://neutron-openstack.apps-crc.testing",
+			}
+
+			spec["override"] = map[string]interface{}{
+				"service": serviceOverride,
+			}
+
+			DeferCleanup(th.DeleteInstance, CreateNeutronAPI(
+				neutronAPIName.Namespace, neutronAPIName.Name, spec))
+
+			DeferCleanup(k8sClient.Delete, ctx, th.CreateCABundleSecret(caBundleSecretName))
+			DeferCleanup(k8sClient.Delete, ctx, th.CreateCertSecret(internalCertSecretName))
+			DeferCleanup(k8sClient.Delete, ctx, th.CreateCertSecret(publicCertSecretName))
+
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      SecretName,
+					Namespace: namespace,
+				},
+				Data: map[string][]byte{
+					"NeutronPassword": []byte("12345678"),
+					"transport_url":   []byte("rabbit://user@svc:1234"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).Should(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, secret)
+			DeferCleanup(
+				mariadb.DeleteDBService,
+				mariadb.CreateDBService(
+					namespace,
+					GetNeutronAPI(neutronAPIName).Spec.DatabaseInstance,
+					corev1.ServiceSpec{
+						Ports: []corev1.ServicePort{{Port: 3306}},
+					},
+				),
+			)
+			SimulateTransportURLReady(apiTransportURLName)
+			DeferCleanup(infra.DeleteMemcached, infra.CreateMemcached(namespace, "memcached", memcachedSpec))
+			infra.SimulateMemcachedReady(memcachedName)
+			DeferCleanup(DeleteOVNDBClusters, CreateOVNDBClusters(namespace))
+			DeferCleanup(keystone.DeleteKeystoneAPI, keystone.CreateKeystoneAPI(namespace))
+			mariadb.SimulateMariaDBDatabaseCompleted(types.NamespacedName{Namespace: namespace, Name: neutronAPIName.Name})
+			th.SimulateJobSuccess(types.NamespacedName{Namespace: namespace, Name: neutronAPIName.Name + "-db-sync"})
+			keystone.SimulateKeystoneServiceReady(types.NamespacedName{Namespace: namespace, Name: "neutron"})
+			keystone.SimulateKeystoneEndpointReady(types.NamespacedName{Namespace: namespace, Name: "neutron"})
+		})
+
+		It("registers endpointURL as public neutron endpoint", func() {
+
+			th.ExpectCondition(
+				neutronAPIName,
+				ConditionGetterFunc(NeutronAPIConditionGetter),
+				condition.KeystoneEndpointReadyCondition,
+				corev1.ConditionTrue,
+			)
+			keystoneEndpoint := keystone.GetKeystoneEndpoint(types.NamespacedName{Namespace: namespace, Name: "neutron"})
+			endpoints := keystoneEndpoint.Spec.Endpoints
+			Expect(endpoints).To(HaveKeyWithValue("public", "https://neutron-openstack.apps-crc.testing"))
+			Expect(endpoints).To(HaveKeyWithValue("internal", "https://neutron-internal."+neutronAPIName.Namespace+".svc:9696"))
 		})
 	})
 })

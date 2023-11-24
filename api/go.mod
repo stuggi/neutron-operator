@@ -48,6 +48,7 @@ require (
 	github.com/prometheus/common v0.37.0 // indirect
 	github.com/prometheus/procfs v0.8.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/stretchr/testify v1.8.3 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/net v0.19.0 // indirect
@@ -73,9 +74,19 @@ require (
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
 
+replace ( //allow-merging
+	// pin to k8s 0.26.x for now
+	k8s.io/api => k8s.io/api v0.26.11
+	k8s.io/apimachinery => k8s.io/apimachinery v0.26.11
+	k8s.io/client-go => k8s.io/client-go v0.26.11
+	sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.14.7
+)
+
 // mschuppert: map to latest commit from release-4.13 tag
 // must consistent within modules and service operators
 replace github.com/openshift/api => github.com/openshift/api v0.0.0-20230414143018-3367bc7e6ac7 //allow-merging
 
 // Bump golang.org/x/net to avoid Rapid Reset CVE
 replace golang.org/x/net => golang.org/x/net v0.18.0 //allow-merging
+
+replace github.com/openstack-k8s-operators/lib-common/modules/common => github.com/Deydra71/lib-common/modules/common v0.0.0-20231208095031-62070e5707ac
