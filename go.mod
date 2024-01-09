@@ -103,4 +103,4 @@ replace github.com/openstack-k8s-operators/neutron-operator/api => ./api
 // must consistent within modules and service operators
 replace github.com/openshift/api => github.com/openshift/api v0.0.0-20230414143018-3367bc7e6ac7 //allow-merging
 
-replace github.com/openstack-k8s-operators/lib-common/modules/common => github.com/deydra71/lib-common/modules/common v0.0.0-20231221132238-bb04f7477236
+replace github.com/openstack-k8s-operators/lib-common/modules/common => github.com/deydra71/lib-common/modules/common v0.0.0-20240108150456-e7962ed7031f

@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -104,18 +105,25 @@ func Deployment(
 
 	for _, endpt := range []service.Endpoint{service.EndpointInternal, service.EndpointPublic} {
 		if instance.Spec.TLS.API.Enabled(endpt) {
-			var tlsEndptCfg tls.GenericService
+			var svc *tls.Service
+			var err error
 			switch endpt {
 			case service.EndpointPublic:
-				tlsEndptCfg = instance.Spec.TLS.API.Public
+				svc, err = instance.Spec.TLS.API.Public.ToService()
+				if err != nil {
+					return nil, err
+				}
+				svc.CertMount = ptr.To("/etc/pki/tls/certs/public.crt")
+				svc.KeyMount = ptr.To("/etc/pki/tls/private/public.key")
 			case service.EndpointInternal:
-				tlsEndptCfg = instance.Spec.TLS.API.Internal
+				svc, err = instance.Spec.TLS.API.Internal.ToService()
+				if err != nil {
+					return nil, err
+				}
+				svc.CertMount = ptr.To("/etc/pki/tls/certs/internal.crt")
+				svc.KeyMount = ptr.To("/etc/pki/tls/private/internal.key")
 			}
 
-			svc, err := tlsEndptCfg.ToService()
-			if err != nil {
-				return nil, err
-			}
 			volumes = append(volumes, svc.CreateVolume(endpt.String()))
 			httpdVolumeMounts = append(httpdVolumeMounts, svc.CreateVolumeMounts(endpt.String())...)
 		}
@@ -153,9 +161,11 @@ func Deployment(
 							TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 						},
 						{
-							Name:                     ServiceName + "-httpd",
-							Command:                  []string{NeutronAPIHttpdCommand},
-							Args:                     httpdArgs,
+							Name:    ServiceName + "-httpd",
+							Command: []string{NeutronAPIHttpdCommand},
+							Args:    httpdArgs,
+							//Command:                  []string{"/bin/bash"},
+							//Args:                     []string{"-c", "/bin/sleep infinity"},
 							Image:                    instance.Spec.ContainerImage,
 							SecurityContext:          getNeutronHttpdSecurityContext(),
 							Env:                      env.MergeEnvs([]corev1.EnvVar{}, envVars),
