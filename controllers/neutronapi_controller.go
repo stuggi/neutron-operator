@@ -19,7 +19,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -831,7 +830,7 @@ func (r *NeutronAPIReconciler) reconcileNormal(ctx context.Context, instance *ne
 	instance.Status.Conditions.MarkTrue(condition.InputReadyCondition, condition.InputReadyMessage)
 	// run check OpenStack secret - end
 
-	memcached, err := r.getNeutronMemcached(ctx, helper, instance)
+	memcached, err := memcachedv1.GetMemcachedByName(ctx, helper, instance.Spec.MemcachedInstance, instance.Namespace)
 	if err != nil {
 		if k8s_errors.IsNotFound(err) {
 			instance.Status.Conditions.Set(condition.FalseCondition(
@@ -1409,7 +1408,7 @@ func (r *NeutronAPIReconciler) generateServiceSecrets(
 		return err
 	}
 
-	mc, err := r.getNeutronMemcached(ctx, h, instance)
+	mc, err := memcachedv1.GetMemcachedByName(ctx, h, instance.Spec.MemcachedInstance, instance.Namespace)
 	if err != nil {
 		return err
 	}
@@ -1419,8 +1418,8 @@ func (r *NeutronAPIReconciler) generateServiceSecrets(
 	templateParameters["KeystoneInternalURL"] = keystoneInternalURL
 	templateParameters["KeystonePublicURL"] = keystonePublicURL
 	templateParameters["TransportURL"] = transportURL
-	templateParameters["MemcachedServers"] = strings.Join(mc.Status.ServerList, ",")
-	templateParameters["MemcachedServersWithInet"] = strings.Join(mc.Status.ServerListWithInet, ",")
+	templateParameters["MemcachedServers"] = mc.GetMemcachedServerListString()
+	templateParameters["MemcachedServersWithInet"] = mc.GetMemcachedServerListWithInetString()
 
 	// Other OpenStack services
 	servicePassword := string(ospSecret.Data[instance.Spec.PasswordSelectors.Service])
@@ -1536,26 +1535,6 @@ func (r *NeutronAPIReconciler) memcachedNamespaceMapFunc(ctx context.Context, cl
 		}
 		return nil
 	}
-}
-
-// getNeutronMemcached - gets the Memcached instance used for neutron cache backend
-func (r *NeutronAPIReconciler) getNeutronMemcached(
-	ctx context.Context,
-	h *helper.Helper,
-	instance *neutronv1beta1.NeutronAPI,
-) (*memcachedv1.Memcached, error) {
-	memcached := &memcachedv1.Memcached{}
-	err := h.GetClient().Get(
-		ctx,
-		types.NamespacedName{
-			Name:      instance.Spec.MemcachedInstance,
-			Namespace: instance.Namespace,
-		},
-		memcached)
-	if err != nil {
-		return nil, err
-	}
-	return memcached, err
 }
 
 // ensureDB - create neutron DB instance
