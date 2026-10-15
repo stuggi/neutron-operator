@@ -809,7 +809,7 @@ func (r *NeutronAPIReconciler) reconcileInit(
 				Labels:    exportLabels,
 				Selector:  serviceLabels,
 				Port: service.GenericServicePort{
-					Name:     endpointName,
+					Name:     endpointTypeStr,
 					Port:     data.Port,
 					Protocol: corev1.ProtocolTCP,
 				},
@@ -842,9 +842,33 @@ func (r *NeutronAPIReconciler) reconcileInit(
 				service.AnnotationIngressCreateKey: "false",
 			})
 			if svc.GetServiceType() == corev1.ServiceTypeLoadBalancer {
-				svc.AddAnnotation(map[string]string{
-					service.AnnotationHostnameKey: svc.GetServiceHostname(), // add annotation to register service name in dnsmasq
-				})
+				defaultName := svc.GetServiceHostname()
+				serverName, serverAliases, err := service.GetVHostServerName(svcOverride, defaultName)
+				if err != nil {
+					instance.Status.Conditions.Set(condition.FalseCondition(
+						condition.CreateServiceReadyCondition,
+						condition.ErrorReason,
+						condition.SeverityWarning,
+						condition.CreateServiceReadyErrorMessage,
+						err.Error()))
+					return ctrl.Result{}, err
+				}
+
+				// Clear override-provided DNS values before adding the endpoint's
+				// managed values: AddAnnotation merges via MergeStringMaps, which
+				// keeps any existing (user-supplied) value, so a stale hostname/cnames
+				// from the service override would otherwise win over the managed one.
+				svc.RemoveAnnotation(service.AnnotationHostnameKey)
+				svc.RemoveAnnotation(service.AnnotationCNAMEsKey)
+				annotations := map[string]string{
+					service.AnnotationHostnameKey: serverName,
+				}
+				if len(serverAliases) > 0 {
+					annotations[service.AnnotationCNAMEsKey] = strings.Join(serverAliases, ",")
+				} else {
+					svc.RemoveAnnotation(service.AnnotationCNAMEsKey)
+				}
+				svc.AddAnnotation(annotations)
 			}
 		}
 
@@ -2352,7 +2376,13 @@ func (r *NeutronAPIReconciler) generateServiceSecrets(
 	httpdVhostConfig := map[string]any{}
 	for _, endpt := range []service.Endpoint{service.EndpointInternal, service.EndpointPublic} {
 		endptConfig := map[string]any{}
-		endptConfig["ServerName"] = fmt.Sprintf("neutron-%s.%s.svc", endpt.String(), instance.Namespace)
+		defaultName := fmt.Sprintf("%s-%s.%s.svc", neutronapi.ServiceName, endpt.String(), instance.Namespace)
+		serverName, serverAliases, err := service.GetVHostServerName(instance.Spec.Override.Service[endpt], defaultName)
+		if err != nil {
+			return err
+		}
+		endptConfig["ServerName"] = serverName
+		endptConfig["ServerAliases"] = serverAliases
 		endptConfig["TLS"] = false // default TLS to false, and set it bellow to true if enabled
 		if instance.Spec.TLS.API.Enabled(endpt) {
 			endptConfig["TLS"] = true
